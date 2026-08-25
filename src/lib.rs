@@ -1,0 +1,13 @@
+pub mod category;
+pub mod cli;
+pub mod commands;
+pub mod default_nix;
+pub mod doctor;
+pub mod error;
+pub mod init;
+pub mod nixfile;
+pub mod paths;
+pub mod rebuild;
+pub mod resolver;
+pub mod state;
+pub mod ui;
