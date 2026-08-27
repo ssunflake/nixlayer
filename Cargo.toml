@@ -1,6 +1,6 @@
 [package]
 name = "nixlayer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A focused package-list manager for NixOS that owns a small modules/nixlayer/ directory instead of your whole configuration."
 license = "MIT"
