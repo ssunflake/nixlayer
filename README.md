@@ -3,6 +3,9 @@
 A focused package-list manager for NixOS
 
 ![tests](https://github.com/ssunflake/nixlayer/actions/workflows/build-and-cache.yml/badge.svg)
+^ Doesnt work because i forgot to fix parralel testing!! ^
+will fix
+
 
 nixlayer manages **one small directory** inside your NixOS configuration
 `modules/nixlayer/` — and nothing else. It is not a general NixOS config editor.
@@ -92,8 +95,14 @@ behavior).
 
 ```
 cargo build
-cargo test          # 25 unit tests, no Nix installation required
+cargo test          
 ```
+> [!Warning]
+> use
+> ```
+> cargo test -- --test-threads=1
+> ```
+> Since parralel testing is broken right now
 
 Set `NIXLAYER_CONFIG_DIR` to point at any directory to use it instead of
 `/etc/nixos` — handy for testing, or for non-standard config layouts.
