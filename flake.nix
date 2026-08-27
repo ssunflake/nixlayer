@@ -17,6 +17,7 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          cargoTestFlags = [ "-- --test-threads=1" ]; #TEMPTEMPTEMP
 
           # nixlayer shells out to these at runtime; wrap the binary so they're
           # found even if the user's PATH doesn't already have them (it almost
