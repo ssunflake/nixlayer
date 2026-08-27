@@ -108,7 +108,7 @@ mod tests {
         std::env::set_var("NIXLAYER_CONFIG_DIR", dir.path());
         let paths = Paths::at(dir.path().to_path_buf());
         std::fs::create_dir_all(&paths.nixlayer_dir).unwrap();
-        std::fs::write(paths.default_nix(), crate::default_nix::render()).unwrap();
+        std::fs::write(paths.default_nix(), crate::default_nix::render(false)).unwrap();
         (dir, paths)
     }
 

@@ -33,7 +33,7 @@ pub fn run(dry_run: bool) -> Result<InitReport> {
 
     if !dry_run {
         fs::create_dir_all(&paths.nixlayer_dir)?;
-        fs::write(paths.default_nix(), default_nix::render())?;
+        fs::write(paths.default_nix(), default_nix::render(false))?;
         if created_default_category {
             fs::write(&default_category_path, Category::template(DEFAULT_CATEGORY))?;
         }

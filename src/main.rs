@@ -1,5 +1,5 @@
 use clap::Parser;
-use nixlayer::cli::{Cli, Command};
+use nixlayer::cli::{Cli, Command, GithubAction, ImportAction};
 use nixlayer::{commands, ui};
 
 fn main() {
@@ -28,6 +28,32 @@ fn main() {
         Command::Diff => commands::diff(),
         Command::Rebuild { mode, dry_run } => commands::rebuild(mode.into(), dry_run),
         Command::Doctor => commands::doctor(),
+        Command::AllowUnfree { disable } => commands::allow_unfree(disable),
+        Command::Github { action } => match action {
+            GithubAction::Add {
+                owner_repo,
+                r#ref,
+                attr,
+                name,
+                category,
+                dry_run,
+            } => commands::github_add(
+                &owner_repo,
+                r#ref.as_deref(),
+                attr.as_deref(),
+                name.as_deref(),
+                category.as_deref(),
+                dry_run,
+            ),
+            GithubAction::List => commands::github_list(),
+            GithubAction::Remove { name, dry_run } => commands::github_remove(&name, dry_run),
+            GithubAction::Update { name, dry_run } => commands::github_update(&name, dry_run),
+        },
+        Command::Import { action } => match action {
+            ImportAction::Profile { category, dry_run } => {
+                commands::import_profile(category.as_deref(), dry_run)
+            }
+        },
     };
 
     if let Err(e) = result {
@@ -35,3 +61,4 @@ fn main() {
         std::process::exit(1);
     }
 }
+

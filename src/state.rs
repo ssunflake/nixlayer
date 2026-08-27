@@ -39,7 +39,7 @@ impl State {
         let mut categories = BTreeMap::new();
         for (name, cat) in crate::category::load_all(paths)? {
             if let Ok(cat) = cat {
-                let mut pkgs = cat.packages;
+                let mut pkgs = cat.all_identifiers();
                 pkgs.sort();
                 categories.insert(name, pkgs);
             }

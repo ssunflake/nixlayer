@@ -60,6 +60,34 @@ pub fn replace_bracket_inner(text: &str, block: &BracketBlock, new_inner: &str) 
     out
 }
 
+/// Same idea as `find_bracket_block` but for `{ ... }` (brace-depth aware).
+/// Used for the `ghPkgs = { ... };` block in GitHub-sourced categories.
+pub fn find_brace_block(text: &str, search_from: usize) -> Option<BracketBlock> {
+    let bytes = text.as_bytes();
+    let open_idx = text[search_from..].find('{')? + search_from;
+    let mut depth = 0i32;
+    let mut i = open_idx;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = text[open_idx + 1..i].to_string();
+                    return Some(BracketBlock {
+                        open_idx,
+                        close_idx: i,
+                        inner,
+                    });
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Tokens allowed as bare package/attribute-path entries, e.g. `firefox` or
 /// `nodePackages.typescript`. Anything else in a managed list is a sign the
 /// file has custom content nixlayer shouldn't touch.
@@ -201,6 +229,15 @@ mod tests {
             NixlayerError::Other(s) => assert!(s.contains("withPackages") || s.contains("(")),
             _ => panic!("wrong error type"),
         }
+    }
+
+    #[test]
+    fn finds_brace_block_ignoring_nested() {
+        let text = "ghPkgs = { a = { x = 1; }; b = 2; };";
+        let idx = text.find("ghPkgs = ").unwrap() + "ghPkgs = ".len() - 1;
+        let block = find_brace_block(text, idx).unwrap();
+        assert!(block.inner.contains("a = { x = 1; }"));
+        assert!(block.inner.trim_end().ends_with("b = 2;"));
     }
 
     #[test]

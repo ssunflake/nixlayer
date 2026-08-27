@@ -9,5 +9,6 @@ pub mod nixfile;
 pub mod paths;
 pub mod rebuild;
 pub mod resolver;
+pub mod settings;
 pub mod state;
 pub mod ui;

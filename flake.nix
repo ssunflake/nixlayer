@@ -29,7 +29,7 @@
 
           meta = with pkgs.lib; {
             description = "Manage a NixOS system's package list without owning its whole configuration";
-            homepage = "https://github.com/example/nixlayer";
+            homepage = "https://github.com/ssunflake/nixlayer";
             license = licenses.mit;
             mainProgram = "nixlayer";
           };

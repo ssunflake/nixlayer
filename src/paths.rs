@@ -56,6 +56,10 @@ impl Paths {
         self.nixlayer_dir.join(".nixlayer-state.json")
     }
 
+    pub fn settings_file(&self) -> PathBuf {
+        self.nixlayer_dir.join(".nixlayer-settings.json")
+    }
+
     pub fn category_file(&self, category: &str) -> PathBuf {
         self.nixlayer_dir.join(format!("{category}.nix"))
     }

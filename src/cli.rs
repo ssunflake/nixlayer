@@ -90,6 +90,72 @@ pub enum Command {
 
     /// Diagnose the health of your nixlayer setup.
     Doctor,
+
+    /// Enable or disable unfree packages system-wide, via modules/nixlayer/default.nix.
+    /// Never touches configuration.nix.
+    AllowUnfree {
+        #[arg(long)]
+        disable: bool,
+    },
+
+    /// Manage packages sourced from arbitrary GitHub flakes (pinned to an exact commit).
+    Github {
+        #[command(subcommand)]
+        action: GithubAction,
+    },
+
+    /// Pull imperatively-installed packages (nix-env / nix profile) into a managed category.
+    Import {
+        #[command(subcommand)]
+        action: ImportAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GithubAction {
+    /// Add a package from a GitHub flake, e.g. `nixlayer github add hyprwm/Hyprland`.
+    Add {
+        /// owner/repo, e.g. hyprwm/Hyprland
+        owner_repo: String,
+        /// Branch or tag to resolve (defaults to the repo's default branch).
+        #[arg(long)]
+        r#ref: Option<String>,
+        /// Flake output attribute (defaults to `default`, i.e. `packages.<system>.default`).
+        #[arg(long)]
+        attr: Option<String>,
+        /// Local name to manage it under (defaults to the repo name).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, short)]
+        category: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List all GitHub-sourced packages across every category.
+    List,
+    /// Remove a GitHub-sourced package by its local name.
+    Remove {
+        name: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Re-resolve a GitHub-sourced package to the latest commit on its tracked ref.
+    Update {
+        name: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ImportAction {
+    /// Import packages from nix-env / `nix profile` into a managed category.
+    Profile {
+        #[arg(long, short)]
+        category: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]

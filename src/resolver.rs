@@ -317,6 +317,281 @@ struct LegacyEntry {
     version: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// GitHub flake sources (arbitrary repos, not nixpkgs)
+// ---------------------------------------------------------------------------
+
+/// Metadata resolved for a single package pulled from an arbitrary GitHub
+/// flake, pinned to an exact commit via Nix's own fetcher (`nix flake
+/// metadata`) rather than anything nixlayer invents itself.
+#[derive(Debug, Clone)]
+pub struct GithubPackageInfo {
+    pub owner: String,
+    pub repo: String,
+    pub git_ref: Option<String>,
+    pub rev: String,
+    pub attr: String,
+    pub description: Option<String>,
+    pub homepage: Option<String>,
+}
+
+/// Resolve `owner/repo[@ref]` + an output attribute into a pinned commit and
+/// (best-effort) metadata. Two Nix calls:
+///   1. `nix flake metadata` — asks Nix's own fetcher to resolve `ref` (a
+///      branch/tag, or the repo's default branch if omitted) to an exact
+///      commit. This is the same mechanism `nix flake update` itself uses.
+///   2. `nix eval --impure` — evaluates `(builtins.getFlake "github:...@rev").packages.<system>.<attr>.meta`
+///      for a description/homepage, if the flake happens to set `meta` at
+///      all (many flakes don't; that's fine, fields stay `None`).
+/// `--impure` is required here because `builtins.currentSystem` needs it;
+/// evaluating a *pinned* rev keeps the actual package resolution pure regardless.
+pub fn resolve_github(
+    owner: &str,
+    repo: &str,
+    git_ref: Option<&str>,
+    attr: Option<&str>,
+) -> Result<GithubPackageInfo> {
+    if which("nix").is_none() {
+        return Err(NixlayerError::Other(
+            "GitHub-sourced packages require the modern `nix` CLI (flakes) — the legacy nix-env fallback doesn't support this.".to_string(),
+        ));
+    }
+
+    let attr = attr.unwrap_or("default").to_string();
+    let flake_url = match git_ref {
+        Some(r) => format!("github:{owner}/{repo}/{r}"),
+        None => format!("github:{owner}/{repo}"),
+    };
+
+    let meta_output = nix_cmd()
+        .args(["flake", "metadata", &flake_url, "--json"])
+        .output()
+        .map_err(|e| NixlayerError::ResolverFailed(e.to_string()))?;
+    if !meta_output.status.success() {
+        return Err(NixlayerError::ResolverFailed(format!(
+            "could not resolve {flake_url} — is the repo public and does it have a flake.nix?\n{}",
+            String::from_utf8_lossy(&meta_output.stderr).trim()
+        )));
+    }
+    let meta: FlakeMetadata = serde_json::from_slice(&meta_output.stdout)?;
+    let rev = meta.locked.rev.ok_or_else(|| {
+        NixlayerError::ResolverFailed(format!(
+            "{flake_url} resolved, but Nix didn't report a pinned commit — unexpected flake ref shape"
+        ))
+    })?;
+
+    let pinned_url = format!("github:{owner}/{repo}/{rev}");
+    let expr = format!(
+        r#"let f = builtins.getFlake "{pinned_url}"; system = builtins.currentSystem; p = f.packages.${{system}}.{attr}; in {{ description = p.meta.description or null; homepage = p.meta.homepage or null; }}"#
+    );
+    let eval_output = nix_cmd()
+        .args(["eval", "--impure", "--json", "--expr", &expr])
+        .output();
+
+    let (description, homepage) = match eval_output {
+        Ok(out) if out.status.success() => {
+            #[derive(Deserialize)]
+            struct Meta {
+                description: Option<String>,
+                homepage: Option<String>,
+            }
+            match serde_json::from_slice::<Meta>(&out.stdout) {
+                Ok(m) => (m.description, m.homepage),
+                Err(_) => (None, None),
+            }
+        }
+        // Missing `packages.<system>.<attr>` output, or the flake sets no
+        // meta at all — not fatal, we still have the pinned commit.
+        _ => (None, None),
+    };
+
+    Ok(GithubPackageInfo {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        git_ref: git_ref.map(|s| s.to_string()),
+        rev,
+        attr,
+        description,
+        homepage,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct FlakeMetadata {
+    locked: LockedRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct LockedRef {
+    rev: Option<String>,
+}
+
+#[cfg(test)]
+mod github_tests {
+    use super::*;
+
+    #[test]
+    fn eval_expr_has_balanced_braces() {
+        let expr = format!(
+            r#"let f = builtins.getFlake "github:a/b/1234567"; system = builtins.currentSystem; p = f.packages.${{system}}.default; in {{ description = p.meta.description or null; homepage = p.meta.homepage or null; }}"#
+        );
+        assert_eq!(expr.matches('{').count(), expr.matches('}').count());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Imperative profile scanning (nix-env / nix profile), for `nixlayer import profile`
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub enum ProfileBackend {
+    NixProfile,
+    NixEnv,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfileEntry {
+    /// What to show the person (e.g. "firefox-121.0").
+    pub display_name: String,
+    /// Best-guess nixpkgs attribute to try resolving.
+    pub guessed_attr: String,
+    /// Whether this entry's own metadata suggests it came from nixpkgs at all
+    /// (vs. some other flake/channel) — only meaningful for the NixProfile backend.
+    pub likely_nixpkgs: bool,
+    pub backend: ProfileBackend,
+    /// The identifier to hand to `nix profile remove` / `nix-env -e`, if the
+    /// person confirms they want it removed after a successful import.
+    pub removal_key: String,
+}
+
+/// Scan whatever's imperatively installed. Tries the modern `nix profile`
+/// first (richer: it remembers which flake attribute a package came from);
+/// falls back to `nix-env` for older/plain profiles. JSON is parsed loosely
+/// (`serde_json::Value`) rather than into strict structs, since the `nix
+/// profile list --json` schema has changed across Nix versions and this
+/// hasn't been checked against a real installation — see DESIGN.md.
+pub fn scan_profile() -> Result<Vec<ProfileEntry>> {
+    if which("nix").is_some() {
+        if let Some(entries) = try_scan_nix_profile() {
+            return Ok(entries);
+        }
+    }
+    scan_nix_env()
+}
+
+fn try_scan_nix_profile() -> Option<Vec<ProfileEntry>> {
+    let output = nix_cmd().args(["profile", "list", "--json"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+
+    // Schema has varied across Nix releases: sometimes `elements` is an
+    // object keyed by name, sometimes an array. Handle both.
+    let elements = json.get("elements")?;
+    let mut out = Vec::new();
+
+    let mut push_entry = |name_hint: &str, el: &serde_json::Value| {
+        let attr_path = el.get("attrPath").and_then(|v| v.as_str()).unwrap_or("");
+        let original_url = el
+            .get("originalUrl")
+            .and_then(|v| v.as_str())
+            .or_else(|| el.get("url").and_then(|v| v.as_str()))
+            .unwrap_or("");
+        let guessed_attr = attr_path
+            .rsplit_once('.')
+            .map(|(_, a)| a.to_string())
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| name_hint.to_string());
+        let likely_nixpkgs = original_url.to_lowercase().contains("nixpkgs");
+        out.push(ProfileEntry {
+            display_name: name_hint.to_string(),
+            guessed_attr,
+            likely_nixpkgs,
+            backend: ProfileBackend::NixProfile,
+            removal_key: name_hint.to_string(),
+        });
+    };
+
+    if let Some(map) = elements.as_object() {
+        for (name, el) in map {
+            push_entry(name, el);
+        }
+    } else if let Some(list) = elements.as_array() {
+        for el in list {
+            let name_hint = el
+                .get("attrPath")
+                .and_then(|v| v.as_str())
+                .and_then(|a| a.rsplit_once('.').map(|(_, x)| x))
+                .unwrap_or("unknown")
+                .to_string();
+            push_entry(&name_hint, el);
+        }
+    } else {
+        return None;
+    }
+
+    Some(out)
+}
+
+fn scan_nix_env() -> Result<Vec<ProfileEntry>> {
+    let output = Command::new("nix-env")
+        .args(["-q", "--json"])
+        .output()
+        .map_err(|e| NixlayerError::ResolverFailed(e.to_string()))?;
+    if !output.status.success() {
+        return Err(NixlayerError::ResolverFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    let raw: std::collections::BTreeMap<String, LegacyEntry> =
+        serde_json::from_slice(&output.stdout)?;
+    Ok(raw
+        .into_iter()
+        .map(|(display_name, entry)| ProfileEntry {
+            guessed_attr: entry.pname.clone(),
+            display_name,
+            likely_nixpkgs: true, // nix-env has no other notion of "source" to check
+            backend: ProfileBackend::NixEnv,
+            removal_key: entry.pname,
+        })
+        .collect())
+}
+
+/// Actually remove an entry from wherever it's imperatively installed. Only
+/// called after explicit person confirmation. `nix-env -e` is stable across
+/// versions; `nix profile remove <name>` matches modern (2.19+) Nix — older
+/// `nix profile` versions may expect a numeric index instead, in which case
+/// this fails cleanly and the caller should tell the person to check `nix
+/// profile list` themselves.
+pub fn remove_from_profile(entry: &ProfileEntry) -> Result<()> {
+    let (program, args): (&str, Vec<String>) = match entry.backend {
+        ProfileBackend::NixEnv => ("nix-env", vec!["-e".to_string(), entry.removal_key.clone()]),
+        ProfileBackend::NixProfile => (
+            "nix",
+            vec![
+                "--extra-experimental-features".to_string(),
+                EXPERIMENTAL.to_string(),
+                "profile".to_string(),
+                "remove".to_string(),
+                entry.removal_key.clone(),
+            ],
+        ),
+    };
+    let output = Command::new(program)
+        .args(&args)
+        .output()
+        .map_err(|e| NixlayerError::Other(e.to_string()))?;
+    if !output.status.success() {
+        return Err(NixlayerError::Other(format!(
+            "{} failed: {}",
+            program,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
